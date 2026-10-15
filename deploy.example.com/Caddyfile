@@ -1,6 +1,7 @@
 # One box's whole config: becomes /etc/hotserve/Caddyfile on the box
-# whose deploy host names this directory (README.md). No secrets in it:
-# those go in env files on the box, which this repo never holds.
+# whose deploy host names this directory (README.md). No secret values
+# in it: those are under secrets/ beside it, encrypted (README.md,
+# Secrets).
 {
 	# Keep: the admin API off TCP (every app can reach localhost), and
 	# `systemctl reload` finds the socket here.
@@ -39,9 +40,10 @@
 			env APP_VERSION {version}
 			env DATA_DIR {shared_dir}
 
-			# Secrets, when the app has some: KEY=VALUE lines in a file
-			# on the box that only root and hotserve can read (README.md).
-			# env_file /etc/hotserve/example.env
+			# Secrets, when the app has some: `make secret APP=example
+			# VAR=…` encrypts each under secrets/example/, and the box
+			# writes them to this file (README.md, Secrets).
+			# env_file /etc/hotserve/secrets/example.env
 
 			# Who may deploy it: this repo's main branch, by the OIDC
 			# token its workflow mints. Nothing secret is stored here.
@@ -62,6 +64,9 @@ example.com {
 	# no upstream and answers 503. Keep that status — monitors and CI
 	# should see it — but give a person a sentence instead of a blank
 	# page. `journalctl -u hotserve` says which of the two it is.
+	# The template's sentence is quoted, as a new box's answer, in
+	# README.md and hotserve's docs/first-deploy.md (step 3): a change
+	# to it in the template goes there too.
 	handle_errors 502 503 {
 		respond "example is not running: nothing has been deployed yet, or it is down and being restarted." {http.error.status_code}
 	}

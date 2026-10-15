@@ -18,9 +18,8 @@ and signs.
 |---|---|
 | `deploy.example.com/Caddyfile` | One box's whole config; becomes `/etc/hotserve/Caddyfile` on the box whose deploy host names the directory |
 | `.github/workflows/apply.yml` | `make check` on every push and pull request, with the latest stable hotserve (a `HOTSERVE_VERSION` repository variable pins another, such as a prerelease); on `main`, sends the commit to each box (`bin/apply`) |
-| `Makefile` | `make signer`, `make check`, `make wip` |
+| `Makefile` | `make signer`, `make check`, `make wip`; for secrets, `make secret`, `make secrets`, `make secret-show`, `make rekey`, `make secrets-import` |
 | `bin/` | What the Makefile and the workflow run |
-| `sudoers` | Creating and editing the apps' env files on the box, and nothing else |
 
 ## How a change reaches the box
 
@@ -66,7 +65,11 @@ what it runs.
    and clone it. Or copy its files into a new private repo anywhere —
    another account, or a host that is not GitHub (see
    [Outside GitHub](#outside-github)) — with `git init -b main` and the
-   new repo as `origin`.
+   new repo as `origin`. Copy the hidden `.github/` directory too: it
+   holds the workflow, and a repo without it starts no run when pushed
+   and reports no error. Download ZIP and `git archive` keep it;
+   Finder hides it, `cp dir/*` skips it, and GitHub's upload page
+   leaves it out.
 2. Add your SSH key as the first signer:
 
    ```sh
@@ -81,6 +84,19 @@ what it runs.
    that only signs: if the key you push to GitHub with also signs, the
    two checks a box makes (the push came from `main`, a signer made the
    commit) fall to one stolen key.
+
+   Then add the same public key to your GitHub account as a **Signing
+   Key** (Settings → SSH and GPG keys → New SSH key, Key type: Signing
+   Key), so GitHub shows your commits as Verified. Use the web page:
+   `gh ssh-key add --type signing` needs a permission `gh` is not given
+   by default. That badge is GitHub's check, and a box does not read
+   it: a box checks each commit against the `signer` lines in the
+   Caddyfile it runs. So a commit GitHub calls Unverified still applies
+   when a listed key signed it — the key is not on GitHub, or the
+   commit's email is not one GitHub has verified for the account — and
+   one GitHub calls Verified is still refused unless a listed key
+   signed it: a squash from the merge button, which GitHub signs with
+   its own key.
 3. Make the Caddyfile your box's. On a box that already serves its
    own Caddyfile, start from that file whole — its global options,
    sites and apps — so nothing edited there is lost, and keep the
@@ -101,8 +117,16 @@ what it runs.
    takes pushes from that repository's workflow alone, so a placeholder
    left there refuses the first one. On a fresh box, also replace
    `example.com`, `deploy.example.com` and `your-org/example`
-   with yours — `your-org` twice more: the `artifact_allowlist` entry
-   pins the organization alone, and the app's `deploy_trust` its repo.
+   with yours — `your-org` (your organization, or your username if the
+   repos are in your own account) twice more: the `artifact_allowlist`
+   entry pins the organization or account alone, and the app's
+   `deploy_trust` its repo. This lists the lines left to change,
+   comments aside, and prints nothing once all are changed:
+
+   ```sh
+   grep -n '^[^#]*\(your-org\|example\.com\)' */Caddyfile
+   ```
+
    The `app example` block is hotserve's examples/node; a Deno app's
    lines are in its examples/deno.
 4. Name the directory for the box's deploy host, the site that carries
@@ -142,19 +166,19 @@ what it runs.
    Caddyfile. From here on, config changes are pushes to `main`. With
    nothing deployed yet, a correct box looks like this:
 
-   - `https://example.com` answers 503 with the sentence from the
-     Caddyfile's `handle_errors` block — once the certificate is
-     issued, which takes a few seconds after the reload with 80 and
-     443 open.
+   - `https://example.com` answers 503 with `example is not running:
+     nothing has been deployed yet, …`, in a browser or with
+     `curl -i`, once the certificate is issued, which takes a few
+     seconds after the reload with 80 and 443 open.
    - `https://deploy.example.com/example` answers 401 with
      `{"error":"invalid or missing deploy token …"}`, in a browser or
      with `curl -i`. That is the webhook working: a deploy carries a
      token, and nothing without one gets further than this.
 
-The secrets of the apps are still a file on the box each, edited over
-SSH — see [Secrets](#secrets). Hardening the box — SSH by key only, the
+An app's secrets are commits too, encrypted so that only the box
+and its readers can read them: see [Secrets](#secrets). Hardening the box — SSH by key only, the
 SSH port shut, an optional administrator who is not root — is on
-[After the first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/after-first-deploy.md).
+[Hardening the box](https://github.com/smallhoursorg/hotserve/blob/main/docs/hardening.md).
 
 **A repo from an earlier version of this template** — a top-level
 `Caddyfile` pushed by `make push` — is simplest replaced. Upgrade the
@@ -162,10 +186,11 @@ box to a release that has `hotserve init` first. Then make a new repo
 from this template and take the steps above, starting step 3 from the
 file the box runs; steps 3 and 6 need root on the box over SSH, which
 an earlier version of the hardening steps closed: reopen root's key
-login where you ran the upgrade ([After the first deploy](https://github.com/smallhoursorg/hotserve/blob/main/docs/after-first-deploy.md),
-step 4, says how). Then put this directory's `sudoers` on the box in
-place of the old one ([Secrets](#secrets)), and archive the old
-repo.
+login where you ran the upgrade ([Hardening the box](https://github.com/smallhoursorg/hotserve/blob/main/docs/hardening.md),
+step 1, says how). Then archive the old repo. Its `sudoers` file is
+not needed any more: an app's secrets are commits ([Secrets](#secrets)),
+and once they are, `rm /etc/sudoers.d/hotserve-admin` and `groupdel
+hotserve-admin` as root on the box remove it.
 
 ## Change the config
 
@@ -220,6 +245,9 @@ adds Bob is signed by someone already listed:
 2. Alice, a signer: `git merge --squash bob-signer && git commit` —
    one commit, signed by her — and pushes `main`.
 3. Once it applies, Bob's own signed commits go through.
+4. If a box has secrets, Bob's `make signer` also made him a reader
+   ([Secrets](#secrets)): once a reader runs `make rekey` and pushes,
+   he can read what was there before.
 
 Removing someone is a commit that deletes their line, signed by
 someone else, since a box refuses a file that drops the key that
@@ -295,50 +323,90 @@ directory.
 
 ## Secrets
 
-They never go in this repo. Put each app's in a file on the box that
-only root and the `hotserve` user can read, and name it with
-`env_file` in the app's block. As root on the box:
+An app's secrets are commits too. Each value is a file of its own in
+this repo, encrypted on your laptop with [age](https://age-encryption.org)
+to the box's own key and to every reader's SSH key. The box decrypts
+them when it applies the push, and writes the app's env file. GitHub
+and the workflow only ever hold ciphertext, and nothing is typed onto
+the box.
 
-```sh
-install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/example.env   # once: empty, root:hotserve
-editor /etc/hotserve/example.env      # DATABASE_URL=postgres://…
+```
+deploy.example.com/secrets/recipients                who can read them: the box's key first, then each reader's
+deploy.example.com/secrets/example/DATABASE_URL.age  one value, encrypted to all of them
 ```
 
-The `sudoers` file in this directory lets an administrator who is not
-root do those two things and nothing else; both are its exact lines,
-so nothing about the mode, the owner or the directory is theirs to
-choose. To set one up, put the file and the administrator's SSH public
-key on the box from the laptop (`scp sudoers
-root@box.example.com:/etc/sudoers.d/hotserve-admin`, `scp alice.pub
-root@box.example.com:`), then as root on the box, once:
+Once, on the laptop: `brew install age` (or `apt install age`). The
+box's first secret also needs the box's own key, which root prints on
+the box:
 
 ```sh
-chmod 0440 /etc/sudoers.d/hotserve-admin && visudo -c
-adduser --disabled-password --comment "" alice      # no password: SSH keys only, and the sudoers lines ask for none
-install -d -m 0700 -o alice -g alice /home/alice/.ssh
-install -m 0600 -o alice -g alice alice.pub /home/alice/.ssh/authorized_keys
-groupadd hotserve-admin && usermod -aG adm,hotserve-admin alice
+make secret APP=example VAR=DATABASE_URL BOX_KEY=$(ssh root@box.example.com hotserve box key)
 ```
 
-`alice` then runs the two lines above with `sudo` in front of
-`install`, and `sudoedit` in place of `editor`.
+```
+value for example DATABASE_URL (typing is not shown):
+secret: made deploy.example.com/secrets/recipients: this box (age1qpzr…7k2d), alice@example.com
+secret: deploy.example.com/secrets/example/DATABASE_URL.age, encrypted to 2 keys, added to the commit
+secret: example's block does not read its secrets yet; add this line to it:
+secret:     env_file /etc/hotserve/secrets/example.env
+```
 
-A box set up from an earlier version of this template has `bin/push`'s
-lines in that file too, which let an administrator write the Caddyfile
-around the signed pushes: copy this one over it, as above.
+The value goes from the prompt, or a pipe (`pbpaste | make secret …`),
+straight into age, never onto the laptop's disk. The prompt takes what
+you paste or type exactly as it is: typing is not shown, so a
+Backspace or an arrow key refuses the value, and you enter it again.
+Add the `env_file` line to the app's block, commit (signed) and push.
+The run names what the box did, never a value:
+
+```
+apply: deploy.example.com secrets: example: added DATABASE_URL
+apply: deploy.example.com at 9be0d44: loaded; running apps are not restarted; apps example
+apply: example reads its secrets at its next launch; a deploy of a new version launches it now
+```
+
+The box writes `/etc/hotserve/secrets/example.env`, which only root
+and hotserve can read and no app can see. hotserve reads it each time
+the app launches, so a value reaches the app at its next launch: its
+next deploy of a new version, or a relaunch after a crash or a reboot.
+
+| To | Run |
+|---|---|
+| Set a value, or change one | `make secret APP=example VAR=DATABASE_URL` |
+| See the names, and who can read them | `make secrets` |
+| Read a value back | `make secret-show APP=example VAR=DATABASE_URL` |
+| Remove one | `git rm deploy.example.com/secrets/example/DATABASE_URL.age` |
+| Bring in an env file made on the box | `ssh root@box.example.com cat /etc/hotserve/example.env \| make secrets-import APP=example` |
+| Let a new reader read what is there, or move it all to a rebuilt box's key | `make rekey`, or `make rekey BOX_KEY=…` |
+
+A box's first secret, by `make secret` or `make secrets-import`, also
+takes `BOX_KEY=$(ssh root@box.example.com hotserve box key)`: it makes
+the recipients file. With more than one box, name the one you mean:
+`BOX=deploy.example.com`.
+`make check`, on every push and pull request, holds the secrets to
+what the box takes, and warns as one nears a cap. A Deno app also needs
+`--allow-env=` to name each variable it reads.
 
 Whoever can get a signed commit onto `main` can read these files
 anyway: one site in the Caddyfile serves any file the `hotserve` user
 can read, env files included. A signer's key is the Caddyfile, and the
 Caddyfile is every app's secrets.
 
-The `adm` group reads the whole system journal — `journalctl -u
-hotserve`, an app's lines, `journalctl -u hotserve-box-apply` — not
-only hotserve's. An env file is an app's environment, which for most
-runtimes is a way to run code as that app (`NODE_OPTIONS`, say), so
-give this to the people who may change what the apps run.
+The rest is on hotserve's [Secrets](https://github.com/smallhoursorg/hotserve/blob/main/docs/secrets.md)
+page: who can read a value, adding or removing a person (removing one
+does not take back what they could read: change those values), a
+rebuilt box, a signing key age cannot use, rotating a value, and what
+GitHub and CI see.
+
+### An env file on the box, by hand
+
+An app's block can still name a file made on the box, outside this
+repo, as root, and it keeps working as it always has:
+
+```sh
+install -m 0640 -o root -g hotserve -T /dev/null /etc/hotserve/example.env   # once: empty, root:hotserve
+editor /etc/hotserve/example.env      # DATABASE_URL=postgres://…
+```
 
 hotserve reads the file each time the app launches, so a missing or
 unreadable one fails that launch, and a changed one applies at the
-next. A Deno app also needs `--allow-env=` to name each variable it
-reads.
+next.
