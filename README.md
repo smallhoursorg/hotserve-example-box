@@ -17,7 +17,8 @@ and signs.
 | File | What it is |
 |---|---|
 | `deploy.example.com/Caddyfile` | One box's whole config; becomes `/etc/hotserve/Caddyfile` on the box whose deploy host names the directory |
-| `.github/workflows/apply.yml` | `make check` on every push and pull request, with the latest stable hotserve (a `HOTSERVE_VERSION` repository variable pins another, such as a prerelease); on `main`, sends the commit to each box (`bin/apply`) |
+| `deploy.example.com/HOTSERVE_VERSION` | Optional: the release that box runs, one line (`0.3.1`, `v0.3.1-rc1`), when it is not the one the workflow checks with ([A box on another release](#a-box-on-another-release)); never sent to the box |
+| `.github/workflows/apply.yml` | `make check` on every push and pull request, with the latest stable hotserve (a `HOTSERVE_VERSION` repository variable pins another, such as a prerelease, for every box; a box's own `HOTSERVE_VERSION` file pins that box's); on `main`, sends the commit to each box (`bin/apply`) |
 | `Makefile` | `make signer`, `make check`, `make wip`; for secrets, `make secret`, `make secrets`, `make secret-show`, `make rekey`, `make secrets-import` |
 | `bin/` | What the Makefile and the workflow run |
 
@@ -124,7 +125,7 @@ what it runs.
    comments aside, and prints nothing once all are changed:
 
    ```sh
-   grep -n '^[^#]*\(your-org\|example\.com\)' */Caddyfile
+   grep -En '^([^#]*[^#A-Za-z0-9-])?(your-org|example\.com)([^A-Za-z0-9.-]|$)' */Caddyfile
    ```
 
    The `app example` block is hotserve's examples/node; a Deno app's
@@ -146,11 +147,17 @@ what it runs.
 
 6. Tell the box which repo it belongs to. Copy the box's directory to
    it, as the commit has it rather than as your checkout does, and run
-   `hotserve init` there, as root, with this commit:
+   `hotserve init` there, as root, with this commit. The first two
+   lines check the commit: that it has the directory's `Caddyfile`, and
+   then step 3's check. While a placeholder is left it prints its line
+   and sends nothing, so change it, commit, and run the four lines
+   again.
 
    ```sh
-   git archive HEAD deploy.yourdomain.com | ssh root@box.example.com tar -xf -
-   ssh root@box.example.com "cd deploy.yourdomain.com && hotserve init $(git rev-parse HEAD)"
+   git cat-file -e HEAD:deploy.yourdomain.com/Caddyfile &&
+     ! git show HEAD:deploy.yourdomain.com/Caddyfile | grep -En '^([^#]*[^#A-Za-z0-9-])?(your-org|example\.com)([^A-Za-z0-9.-]|$)' &&
+     git archive HEAD deploy.yourdomain.com | ssh root@box.example.com tar -xf - &&
+     ssh root@box.example.com "cd deploy.yourdomain.com && hotserve init $(git rev-parse HEAD)"
    ```
 
    It installs the file, reloads hotserve, and records the commit; the
@@ -177,20 +184,9 @@ what it runs.
 
 An app's secrets are commits too, encrypted so that only the box
 and its readers can read them: see [Secrets](#secrets). Hardening the box — SSH by key only, the
-SSH port shut, an optional administrator who is not root — is on
+SSH port shut, and, optionally, an administrator who is not root and
+Debian's updates installed on their own — is on
 [Hardening the box](https://github.com/smallhoursorg/hotserve/blob/main/docs/hardening.md).
-
-**A repo from an earlier version of this template** — a top-level
-`Caddyfile` pushed by `make push` — is simplest replaced. Upgrade the
-box to a release that has `hotserve init` first. Then make a new repo
-from this template and take the steps above, starting step 3 from the
-file the box runs; steps 3 and 6 need root on the box over SSH, which
-an earlier version of the hardening steps closed: reopen root's key
-login where you ran the upgrade ([Hardening the box](https://github.com/smallhoursorg/hotserve/blob/main/docs/hardening.md),
-step 1, says how). Then archive the old repo. Its `sudoers` file is
-not needed any more: an app's secrets are commits ([Secrets](#secrets)),
-and once they are, `rm /etc/sudoers.d/hotserve-admin` and `groupdel
-hotserve-admin` as root on the box remove it.
 
 ## Change the config
 
@@ -285,33 +281,47 @@ signed push overwrites a hand edit — the run warns that it did — which
 is the point: the repo is the truth and the edit is a bridge back to
 it, so a fix that must outlive the night is a commit.
 
+The same path moves where the deploy host's server listens
+(`https_port`, a `bind` on its site): a push cannot move the address
+it arrives on, so the run that would is refused by name and the box
+keeps serving. Commit the change, make it on the box as above (and
+move whatever forwards `https://<host>/` there), then let the next run
+push the commit, which now matches.
+
 ## Outside GitHub
 
 Only the workflow file is GitHub's. `bin/apply` is what talks to the
 boxes, and any CI that gives it what the Actions job does can run it:
 
 - a checkout of the commit being pushed, with its full history;
-- a `hotserve` on `PATH` (`bin/install-hotserve` installs one, with
-  `sudo`; `make check` needs it too);
+- a `hotserve` on `PATH`, and a `hotserve-<version>` for each box whose
+  `HOTSERVE_VERSION` file names one (`bin/install-hotserve` installs
+  them, with `sudo`; `make check` needs them too);
 - `HOTSERVE_TOKEN`: a token that the `box` block's `deploy_trust`
   accepts and whose `sha` claim names that commit. `bin/apply` sends
   that one token with every request, polls included, so it must
   outlive the run.
   - From a CI's OIDC: on GitLab, an `id_tokens:` entry with
-    `aud: hotserve`, and a box block trusting
-    `deploy_trust gitlab { audience hotserve; claim project_path your-org/boxes; claim ref_path refs/heads/main }`.
+    `aud: hotserve`, and a box block with a `deploy_trust gitlab` holding
+    `audience hotserve`, `claim project_path your-org/boxes` and
+    `claim ref_path refs/heads/main`, a line each.
     Not tested.
-  - From a runner without OIDC: a key the box block trusts as
-    `deploy_trust local { public_key …; audience hotserve }`
+  - From a runner without OIDC: a key the box block trusts with a
+    `deploy_trust local` holding `public_key …` and `audience hotserve`,
+    a line each
     (`hotserve deploy-keygen` makes the pair), and a token minted each
-    run with `hotserve deploy-token --key … --audience hotserve --claims sha=<commit>`.
+    run with `hotserve deploy-token --key … --audience hotserve --ttl 1h --claims sha=<commit>`.
     hotserve's own end-to-end tests run `bin/apply` this way. The
     private key is then a stored secret, which OIDC avoids; the
-    signatures still bound what it can push.
+    signatures still bound what it can push. `hotserve` is one name
+    the boxes' blocks share, not a box's own: the one token goes to
+    every box in the repository.
 
 The rules above hold on any host: a merge button that squashes,
 rebases or writes its own merge commit lands a commit no listed key
-signed.
+signed. hotserve's
+[Deploying from outside GitHub](https://github.com/smallhoursorg/hotserve/blob/main/docs/outside-github.md)
+walks through both ways, and an app's deploy from the same runner.
 
 ## More than one box
 
@@ -320,6 +330,41 @@ to every box: each one's history must keep up, even when its own file
 did not change, and then the box answers that it already runs that
 Caddyfile. Each box is set up with `hotserve init` from its own
 directory.
+
+### A box on another release
+
+The workflow checks every box's files with one hotserve: the latest
+stable release, or the one the `HOTSERVE_VERSION` repository variable
+names. Each box validates what it is sent with the release it runs, so
+while one box tries a release candidate and the rest stay on the stable
+release, that one check tells the wrong story: a pull request passes
+with config the stable boxes refuse, and the push to `main` goes red on
+them, named, with nothing changed. A file beside the box's Caddyfile
+pins that box to its own release:
+
+```
+deploy.example.com/HOTSERVE_VERSION     one line: 0.3.1-rc1, or v0.3.1-rc1
+```
+
+`bin/install-hotserve` then installs that release too, as
+`hotserve-0.3.1-rc1`, verified against its `checksums.txt` like the
+rest, and `make check` checks that box's files with it, saying so in
+its line:
+
+```
+deploy.example.com/Caddyfile → https://deploy.example.com/ (1 app, 1 signer), checked with hotserve-0.3.1-rc1
+```
+
+For each box, in this order: its file; else the `HOTSERVE_VERSION`
+repository variable; else the latest stable release. An empty file, one
+that does not name a release, or one that names a release with nothing
+to download, never means "the latest": `bin/install-hotserve` says so,
+naming the file, and skips it, so the other boxes are still checked;
+`make check` then refuses that box, naming the file again. The file is
+this repo's alone: `bin/apply` never sends it, and the box has no use
+for it. It tells the early check which release the box runs; it does
+not install one, and delete it when the box is back on the release the
+others run.
 
 ## Secrets
 
